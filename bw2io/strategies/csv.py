@@ -1,3 +1,6 @@
+import warnings
+
+
 def csv_restore_tuples(data):
     """
     Convert tuple-like strings to actual tuples.
@@ -186,4 +189,168 @@ def csv_add_missing_exchanges_section(data):
     for ds in data:
         if "exchanges" not in ds:
             ds["exchanges"] = []
+    return data
+
+
+_LOADER_MAP_TD = {
+    # Full names as produced automatically by to_json()
+    "bw_temporalis.TemporalDistribution": "TemporalDistribution",
+    "bw_temporalis.FixedTD": "FixedTD",
+    "bw_temporalis.FixedTimeOfYearTD": "FixedTimeOfYearTD",
+    # Short names as a convenience for manually constructed JSON
+    "TemporalDistribution": "TemporalDistribution",
+    "FixedTD": "FixedTD",
+    "FixedTimeOfYearTD": "FixedTimeOfYearTD",
+}
+
+
+def _get_temporalis_classes():
+    """Import and return the three TD classes from bw_temporalis.
+
+    Raises
+    ------
+    ImportError
+        If bw_temporalis is not installed.
+    """
+    try:
+        from bw_temporalis import FixedTD, FixedTimeOfYearTD, TemporalDistribution
+
+        return {
+            "TemporalDistribution": TemporalDistribution,
+            "FixedTD": FixedTD,
+            "FixedTimeOfYearTD": FixedTimeOfYearTD,
+        }
+    except ImportError:
+        raise ImportError(
+            "The `bw_temporalis` package is required to import spreadsheets that "
+            "contain a `temporal_distribution` column. "
+            "Install it with:  pip install bw_temporalis"
+        )
+
+
+def _deserialize_td(raw: str):
+    """Deserialize a single JSON string into the appropriate TD object.
+
+    Parameters
+    ----------
+    raw:
+        The raw string value read from the spreadsheet cell, expected to be
+        the JSON produced by ``TemporalDistribution.to_json()`` (or one of its
+        subclasses)
+        This JSON format is currently the only supported format for temporal
+        distributions in spreadsheets.
+
+    Returns
+    -------
+    TemporalDistribution | FixedTD | FixedTimeOfYearTD
+        The reconstructed temporal distribution object.
+
+    Raises
+    ------
+    ImportError
+        If bw_temporalis is not installed.
+    ValueError
+        If the JSON is missing the ``__loader__`` key or names an unknown class.
+    """
+    import json
+
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(
+            f"Could not parse `temporal_distribution` value as JSON: {raw!r}"
+        ) from exc
+
+    loader_key = data.get("__loader__")
+    if loader_key is None:
+        raise ValueError(
+            "JSON in `temporal_distribution` column is missing the "
+            f"`__loader__` key. Got keys: {list(data.keys())}"
+        )
+
+    class_name = _LOADER_MAP_TD.get(loader_key)
+    if class_name is None:
+        raise ValueError(
+            f"Unknown `__loader__` value {loader_key!r} in `temporal_distribution` "
+            f"column. Supported loaders: {list(_LOADER_MAP_TD.keys())}"
+        )
+
+    classes = _get_temporalis_classes()
+    return classes[class_name].from_json(data)
+
+
+def csv_restore_temporal_distributions(data: list[dict]) -> list[dict]:
+    """Convert ``temporal_distribution`` JSON strings on exchanges into objects.
+
+    This strategy scans every exchange in every dataset in *data*.  When it
+    finds a ``temporal_distribution`` key whose value is a ``str`` it
+    deserializes it into the appropriate ``bw_temporalis`` object
+    (``TemporalDistribution``, ``FixedTD``, or ``FixedTimeOfYearTD``) using
+    that class's ``from_json()`` classmethod.
+
+    Although other formats are conceivable, the JSON format is currently the
+    only supported format for temporal distributions in spreadsheets.
+
+    The ``__loader__`` key embedded by ``to_json()`` is used to dispatch to
+    the correct class, so all three subclasses are handled automatically.
+
+    Parameters
+    ----------
+    data:
+        A list of activity dicts, each optionally containing an ``exchanges``
+        list.  This is the standard format used throughout bw2io strategies.
+
+    Returns
+    -------
+    list[dict]
+        The same list, mutated in-place, with ``temporal_distribution`` string
+        values replaced by the corresponding TD objects.
+
+    Raises
+    ------
+    ImportError
+        If ``bw_temporalis`` is not installed and a ``temporal_distribution``
+        field is encountered.
+    ValueError
+        If a ``temporal_distribution`` value cannot be parsed as JSON, is
+        missing the ``__loader__`` key, or names an unknown loader class.
+        Note: errors relating to malformed ``date``, ``amount``, or
+        ``date_dtype`` values (e.g. mismatched array shapes, wrong dtype)
+        are raised by ``bw_temporalis`` itself via its ``from_json()`` and
+        ``__init__()`` methods, and will bubble up naturally with descriptive
+        messages from that package.
+
+    Examples
+    --------
+    The JSON strings below are what ``TemporalDistribution.to_json()`` and
+    ``FixedTD.to_json()`` produce; you would normally put these in a single
+    spreadsheet cell.
+
+    >>> import json, numpy as np
+    >>> from bw_temporalis import TemporalDistribution
+    >>> td = TemporalDistribution(
+    ...     date=np.array([-1, 0, 1], dtype="timedelta64[Y]"),
+    ...     amount=np.array([0.25, 0.5, 0.25]),
+    ... )
+    >>> data = [
+    ...     {
+    ...         "name": "my activity",
+    ...         "exchanges": [
+    ...             {
+    ...                 "name": "electricity",
+    ...                 "amount": 3.5,
+    ...                 "temporal_distribution": td.to_json(),
+    ...             }
+    ...         ],
+    ...     }
+    ... ]
+    >>> result = csv_restore_temporal_distributions(data)
+    >>> type(result[0]["exchanges"][0]["temporal_distribution"])
+    <class 'bw_temporalis.temporal_distribution.TemporalDistribution'>
+    """
+    for ds in data:
+        for exc in ds.get("exchanges", []):
+            raw = exc.get("temporal_distribution")
+            if isinstance(raw, str):
+                exc["temporal_distribution"] = _deserialize_td(raw)
     return data

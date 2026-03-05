@@ -13,6 +13,7 @@ from ..strategies import (
     csv_drop_unknown,
     csv_numerize,
     csv_restore_booleans,
+    csv_restore_temporal_distributions,
     csv_restore_tuples,
     drop_falsey_uncertainty_fields_but_keep_zeros,
     link_iterable_by_fields,
@@ -95,6 +96,7 @@ class ExcelImporter(LCIImporter):
             drop_falsey_uncertainty_fields_but_keep_zeros,
             convert_uncertainty_types_to_integers,
             convert_activity_parameters_to_list,
+            csv_restore_temporal_distributions,
         ]
         start = time()
         data = self.extractor.extract(filepath)
